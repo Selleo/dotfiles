@@ -1,0 +1,75 @@
+# Ruby CircleCI 2.0 configuration file
+#
+# Check https://circleci.com/docs/2.0/language-ruby/ for more details
+#
+version: 2
+jobs:
+  build:
+    docker:
+      - image: circleci/ruby:2.5.1
+        environment:
+          - RAILS_ENV=test
+          - DATABASE_URL=postgres://postgres@127.0.0.1/api_test
+      - image: circleci/postgres:10-alpine
+        environment:
+          xpack.security.enabled: false
+          transport.host: localhost
+    environment:
+      - DISABLE_SPRING=1
+      - RAILS_ENV=test
+    working_directory: ~/repo
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+          - v1-dependencies-{{ checksum "Gemfile.lock" }}
+          - v1-dependencies-
+      - run:
+          name: install dependencies
+          command: |
+            gem install bundler
+            bundle install --without development --jobs=4 --retry=3 --path vendor/bundle
+      - run: sudo apt install postgresql-client
+      - save_cache:
+          paths:
+            - public/assets
+            - tmp/cache/assets
+            - /opt/circleci/.rvm/gems
+            - vendor/bundle
+            - ./venv
+          key: v1-dependencies-{{ checksum "Gemfile.lock" }}
+      # One file fetched from different private repository
+      - run:
+          name: setup-db
+          command: |
+            curl \
+              --header "Authorization: token ${DEVELOPER_ACCESS_TOKEN}" \
+              --header "Accept: application/vnd.github.v3.raw" \
+              --remote-name \
+              --location https://api.github.com/repos/SomeRepoOwner/some_repo/contents/db/structure.sql
+            mv structure.sql db/structure.sql
+            bundle exec rake db:create db:structure:load --trace
+      # Rubocop
+      - run:
+          name: run rubocop
+          command: |
+            bundle exec rubocop
+      # Brakeman
+      - run:
+          name: run brakeman
+          command: |
+            bundle exec brakeman --exit-on-warn
+      # RUN_ALL_TESTS controlles if smoke specs should be triggered or not
+      - run:
+          name: run specs
+          command: |
+            if [[ ${RUN_ALL_TESTS} == "true" ]]; then
+              bundle exec rspec --format progress --exclude-pattern ""
+            else
+              bundle exec rspec --format progress
+            fi
+      - store_test_results:
+          path: /tmp/test-results
+      - store_artifacts:
+          path: /tmp/test-results
+          destination: test-results
